@@ -22,9 +22,14 @@ import type {
   RuleValidation,
 } from "@/lib/types";
 import { classForToken, tokenizeRule } from "@/lib/ruleSyntax";
+import { parseDslToTree, treeToDsl, type VisualRuleTree } from "@/lib/ruleTree";
+import { VisualRuleBuilder } from "@/components/VisualRuleBuilder";
 import { useSessionUserId } from "@/lib/useSession";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { StatCard } from "@/components/StatCard";
+import { EmptyState } from "@/components/EmptyState";
+import { errorMessage } from "@/components/ErrorState";
+import { useLocale } from "@/lib/i18n";
 
 const SEVERITIES: RuleSeverity[] = ["Info", "Warning", "Critical"];
 
@@ -38,7 +43,12 @@ const DEFAULT_RULE = "fee_per_invocation > 0.5 XLM for 5m";
  */
 export default function RulesPage() {
   const userId = useSessionUserId();
+  const { t } = useLocale();
   const [source, setSource] = useState(DEFAULT_RULE);
+  const [mode, setMode] = useState<"visual" | "dsl">("visual");
+  const [ruleTree, setRuleTree] = useState<VisualRuleTree>(() =>
+    parseDslToTree(DEFAULT_RULE)
+  );
   const [name, setName] = useState("Expensive invocation");
   const [severity, setSeverity] = useState<RuleSeverity>("Warning");
   const [contractId, setContractId] = useState("");
@@ -49,6 +59,8 @@ export default function RulesPage() {
   const [previewing, setPreviewing] = useState(false);
 
   const [rules, setRules] = useState<AlertRule[]>([]);
+  // A failed list request must read as a failure, not as "no rules".
+  const [rulesError, setRulesError] = useState<string | null>(null);
   const [pendingDeleteRule, setPendingDeleteRule] = useState<AlertRule | null>(
     null
   );
@@ -60,11 +72,13 @@ export default function RulesPage() {
   const previewSeq = useRef(0);
 
   const loadRules = useCallback(async () => {
+    setRulesError(null);
     try {
       const data = await listRules();
       setRules(data.rules ?? []);
-    } catch {
+    } catch (err) {
       setRules([]);
+      setRulesError(errorMessage(err, "The rules request failed."));
     }
   }, []);
 
@@ -150,8 +164,31 @@ export default function RulesPage() {
 
   const useExample = (entry: RuleLibraryEntry) => {
     setSource(entry.source);
+    setRuleTree(parseDslToTree(entry.source));
     setName(entry.name);
     setSeverity((entry.severity as RuleSeverity) ?? "Warning");
+  };
+
+  const handleTreeChange = (nextTree: VisualRuleTree) => {
+    setRuleTree(nextTree);
+    const dsl = treeToDsl(nextTree);
+    setSource(dsl);
+    if (nextTree.contractId !== undefined) {
+      setContractId(nextTree.contractId);
+    }
+    if (nextTree.network !== undefined) {
+      setNetwork(nextTree.network);
+    }
+  };
+
+  const handleSourceChange = (newSource: string) => {
+    setSource(newSource);
+    try {
+      const parsed = parseDslToTree(newSource);
+      setRuleTree(parsed);
+    } catch {
+      // Keep current tree if in-flight text is partially typed
+    }
   };
 
   return (
@@ -167,13 +204,41 @@ export default function RulesPage() {
       <div className="grid gap-6 lg:grid-cols-2">
         {/* ---- editor ---- */}
         <section className="rounded-lg border border-[var(--color-border)] p-4">
-          <h2 className="mb-3 text-lg font-semibold">Editor</h2>
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="mb-4 flex items-center justify-between border-b border-[var(--color-border)] pb-2">
+            <h2 className="text-lg font-semibold">Rule Editor</h2>
+            <div className="flex gap-1 rounded bg-[var(--color-bg-base)] p-1 text-xs">
+              <button
+                type="button"
+                onClick={() => setMode("visual")}
+                className={`rounded px-2.5 py-1 font-medium transition ${
+                  mode === "visual"
+                    ? "bg-[var(--color-bg-surface)] text-[var(--color-text-primary)] shadow-xs"
+                    : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                }`}
+              >
+                Visual Builder
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode("dsl")}
+                className={`rounded px-2.5 py-1 font-medium transition ${
+                  mode === "dsl"
+                    ? "bg-[var(--color-bg-surface)] text-[var(--color-text-primary)] shadow-xs"
+                    : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                }`}
+              >
+                DSL Text Editor
+              </button>
+            </div>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3 mb-4">
             <label className="sm:col-span-2 text-sm">
               <span className="mb-1 block text-[var(--color-text-secondary)]">
                 Name
               </span>
               <input
+                id="rule-name-input"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 className="w-full rounded border border-[var(--color-border)] bg-transparent px-2 py-1"
@@ -197,70 +262,86 @@ export default function RulesPage() {
                 ))}
               </select>
             </label>
-            <label className="text-sm">
-              <span className="mb-1 block text-[var(--color-text-secondary)]">
-                Contract (optional)
-              </span>
-              <input
-                value={contractId}
-                onChange={(e) => setContractId(e.target.value)}
-                placeholder="C..."
-                className="w-full rounded border border-[var(--color-border)] bg-transparent px-2 py-1 font-mono text-xs"
-                aria-label="Contract id"
-              />
-            </label>
-            <label className="text-sm">
-              <span className="mb-1 block text-[var(--color-text-secondary)]">
-                Network (optional)
-              </span>
-              <select
-                value={network}
-                onChange={(e) => setNetwork(e.target.value)}
-                className="w-full rounded border border-[var(--color-border)] bg-transparent px-2 py-1"
-                aria-label="Network"
-              >
-                <option value="">All networks</option>
-                {(
-                  catalog?.networks ?? [
-                    "testnet",
-                    "mainnet",
-                    "futurenet",
-                    "standalone",
-                  ]
-                ).map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
-              </select>
-            </label>
           </div>
 
-          {/* highlighted editor: a transparent textarea sits over coloured text */}
-          <div className="relative mt-4 h-24 w-full overflow-hidden rounded border border-[var(--color-border)] font-mono text-sm">
-            <pre
-              aria-hidden
-              className="pointer-events-none absolute inset-0 overflow-auto whitespace-pre-wrap break-words p-3"
-            >
-              {tokens.map((t, i) => (
-                <span key={i} className={classForToken(t.kind)}>
-                  {t.text}
-                </span>
-              ))}
-              {"\n"}
-            </pre>
-            <textarea
-              value={source}
-              onChange={(e) => setSource(e.target.value)}
-              spellCheck={false}
-              aria-label="Rule source"
-              className="absolute inset-0 h-full w-full resize-none overflow-auto whitespace-pre-wrap break-words bg-transparent p-3 font-mono text-sm text-transparent caret-[var(--color-text-primary)] outline-none"
+          {mode === "visual" ? (
+            <VisualRuleBuilder
+              value={ruleTree}
+              onChange={handleTreeChange}
+              catalog={catalog}
+              validation={validation}
+              preview={preview}
+              previewing={previewing}
             />
-          </div>
+          ) : (
+            <>
+              <div className="grid gap-3 sm:grid-cols-2 mb-4">
+                <label className="text-sm">
+                  <span className="mb-1 block text-[var(--color-text-secondary)]">
+                    Contract (optional)
+                  </span>
+                  <input
+                    value={contractId}
+                    onChange={(e) => setContractId(e.target.value)}
+                    placeholder="C..."
+                    className="w-full rounded border border-[var(--color-border)] bg-transparent px-2 py-1 font-mono text-xs"
+                    aria-label="Contract id"
+                  />
+                </label>
+                <label className="text-sm">
+                  <span className="mb-1 block text-[var(--color-text-secondary)]">
+                    Network (optional)
+                  </span>
+                  <select
+                    value={network}
+                    onChange={(e) => setNetwork(e.target.value)}
+                    className="w-full rounded border border-[var(--color-border)] bg-transparent px-2 py-1"
+                    aria-label="Network"
+                  >
+                    <option value="">All networks</option>
+                    {(
+                      catalog?.networks ?? [
+                        "testnet",
+                        "mainnet",
+                        "futurenet",
+                        "standalone",
+                      ]
+                    ).map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
 
-          <EditorFeedback validation={validation} errors={errors} />
+              {/* highlighted editor: a transparent textarea sits over coloured text */}
+              <div className="relative mt-4 h-24 w-full overflow-hidden rounded border border-[var(--color-border)] font-mono text-sm">
+                <pre
+                  aria-hidden
+                  className="pointer-events-none absolute inset-0 overflow-auto whitespace-pre-wrap break-words p-3"
+                >
+                  {tokens.map((t, i) => (
+                    <span key={i} className={classForToken(t.kind)}>
+                      {t.text}
+                    </span>
+                  ))}
+                  {"\n"}
+                </pre>
+                <textarea
+                  value={source}
+                  onChange={(e) => handleSourceChange(e.target.value)}
+                  spellCheck={false}
+                  aria-label="Rule source"
+                  className="absolute inset-0 h-full w-full resize-none overflow-auto whitespace-pre-wrap break-words bg-transparent p-3 font-mono text-sm text-transparent caret-[var(--color-text-primary)] outline-none"
+                />
+              </div>
 
-          <div className="mt-3 flex items-center gap-3">
+              <EditorFeedback validation={validation} errors={errors} />
+            </>
+          )}
+
+          <div className="mt-4 flex items-center gap-3">
             <button
               onClick={save}
               disabled={!canSave || saving}
@@ -322,10 +403,24 @@ export default function RulesPage() {
       {/* ---- saved rules ---- */}
       <section>
         <h2 className="mb-3 text-lg font-semibold">Saved rules</h2>
-        {rules.length === 0 ? (
-          <p className="text-sm text-[var(--color-text-secondary)]">
-            No rules yet.
-          </p>
+        {rulesError ? (
+          <EmptyState
+            variant="error"
+            title={t("rules.error.title")}
+            message={rulesError}
+            onRetry={loadRules}
+          />
+        ) : rules.length === 0 ? (
+          <EmptyState
+            variant="first-run"
+            title={t("rules.empty.title")}
+            description={t("rules.empty.body")}
+            action={{
+              label: t("rules.empty.action"),
+              onClick: () =>
+                document.getElementById("rule-name-input")?.focus(),
+            }}
+          />
         ) : (
           <ul className="divide-y divide-[var(--color-border)] rounded-lg border border-[var(--color-border)]">
             {rules.map((rule) => (

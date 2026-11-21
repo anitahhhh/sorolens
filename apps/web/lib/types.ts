@@ -1,3 +1,11 @@
+export interface TokenMetadata {
+  asset_code: string;
+  issuer: string;
+  decimals: number;
+  symbol: string;
+  name: string;
+}
+
 export interface Contract {
   id: string;
   network: string;
@@ -7,6 +15,7 @@ export interface Contract {
   created_at_ledger: number;
   backfill_complete_at: string | null;
   tags: string[];
+  token?: TokenMetadata | null;
 }
 
 export interface ContractDetail extends Contract {
@@ -122,12 +131,6 @@ export interface VolumePoint {
   count: number;
 }
 
-/** One hour bucket of invocation frequency (issue #185). */
-export interface InvocationFrequencyPoint {
-  hour: string; // "HH:00" UTC hour start
-  count: number;
-}
-
 export type StatsResponse = ContractStats;
 
 /** One day of averaged per-invocation resource usage (issue #184). */
@@ -192,6 +195,7 @@ export interface ContractSummary {
   last_activity_at: string | null;
   /** User-defined tags. Absent on optimistic rows built before a response. */
   tags?: string[];
+  token?: TokenMetadata | null;
 }
 
 export interface ContractsListResponse {
@@ -213,6 +217,7 @@ export interface SearchContract {
   backfill_complete_at: string | null;
   added_at: string;
   tags: string[] | null;
+  token?: TokenMetadata | null;
 }
 
 /** Response of GET /api/v1/search: `{ "items": [...] }` per docs/openapi.yaml. */
@@ -449,6 +454,7 @@ export interface GlobalStats {
   total_events: number;
   total_invocations: number;
   total_storage_entries: number;
+  approximate?: boolean;
 }
 
 // ---- live dashboard (#139) --------------------------------------------------
